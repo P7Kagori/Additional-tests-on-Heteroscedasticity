@@ -1,0 +1,170 @@
+---
+title: "HANDLING HETEROSCEDASTICITY OF LINEAR REGRESSION MODELS IN R"
+author: "PAUL KAGORI"
+date: "2023-11-15"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#1. Required Libraries
+
+```{r}
+library(ggplot2)
+library(AER)
+library(dplyr)
+library(knitr)
+library(tidyverse) #data wrangling
+library(foreign)   #read.data()
+library(MASS)
+```
+
+## 1) INTRODUCTION
+
+In my previous article, I reviewed heteroscedasticity, its effect on linear regression, and performed three tests to demonstrate how to identify a heteroscedastic model. In this article we will:
+
+-1. Perform Koenker test and Goldfield-Quandt Test to check if a linear model is heteroscedastic.
+
+-2. Transform heteroscedastic linear model to homoscedastic form through generalized Linear Model(GLM) and Weighted Least Squares(WLS).
+
+-3.Perform Feasible GLS algorithm on data.
+
+## 2) Loading the Dataset
+
+-We use the Journal Data.It consists of Journal Name, Number of subscriptions (subs), Price per charge per article for publication (price), and price charged per citation
+```{r}
+load("EconData.RData")
+head(journals, n = 5)
+dim(journals)
+```
+
+## 3) Qucik Check on the Scatter Plot
+
+We would like to make prediction on number of subscriptions (subs) based on the cite price(citeprice).
+```{r}
+library(lmtest)
+ggplot(data = journals, aes(subs,citeprice), xlab = "citeprice", ylab = "Subs",
+       main = "Citeprice Vs Subs") + geom_point(col = "red") + ggtitle("Citeprice Vs Subs")# Now we have a linear relationship #Relationship between subs and citeprice is not linear.
+ggplot(data = journals, aes(log(subs),log(citeprice)), xlab = "log(citeprice)",
+       ylab = "log(Subs)") + geom_point(col = "blue")+ ggtitle("log(Citeprice) Vs log(Subs)")# Now we have a linear relationship
+```
+Its now linear, with negative relationship. Just as you can see from the graph
+
+## 4) Linear Model
+```{R}
+jlm1 <- lm(log(subs) ~ log(citeprice), data = journals)
+summary(jlm1)
+jlm1$coefficients ## Coefficients of the model
+```
+### 4(i) Fitted Results
+
+As you can see, both the intercept and the coefficients are significant and so the model is:
+$$subs = 4.766 - 0.533citeprice$$
+
+In other words, the higher the cite price, the lower the number of subscriptions. In short, citeprice has and subscriptions are inversly related. However we have:
+$$R^2 = 0.5573$$ The model is not really a good fit. This makes sense from the plot 1 above. You can see the data are more spread out from a central line.
+
+```{r}
+jres <- residuals(jlm1) # We check on the residuals
+plot(log(journals$citeprice), jres, xlab = "log(citeprice)", ylab = "Residuals", main = "Residuals Vs log(citeprice)", col = "green") 
+```
+
+### 4(ii) The plot of Residuals Vs Cite price
+
+Clearly, as you can see, the model is heteroscedastic. The residuals tend to increase with increase in citeprice
+
+### 4(ii) Checking the Linear Fit
+
+```{r}
+plot(log(journals$subs)~log(journals$citeprice), col= "blue", main = "With Linear Model") + abline(jlm1, col = "red")
+```
+## 5) Testing for Heteroscedasticity
+
+### 5(i) Breusch- Pagan Test 
+Under BP test, We have the following:
+$$\text{Original Model:} \quad y = \beta_o + \beta_1 x_1 + \cdots + \beta_r x_r + \xi \\
+\text{ Test Model:} \quad \hat{\xi^2 } = \alpha_o + \alpha_1 x_1 + \alpha_2x_2 + \cdots +\alpha_rx_r$$
+
+Then, we carry out hypothesis test using ANOVA that:
+$$ H_o : \text{Original Model is Homoscedastic} \quad
+H_1: \text{Original Model is Heteroscedastic} $$
+Under Ho one has to accept $$ \alpha_1 = \alpha_2 = \cdots = \alpha_r = 0$$
+
+```{r}
+bplm2 <-lm(jres^2 ~ log(journals$citeprice))
+summary(bplm2)
+anova(bplm2)
+
+```
+AS you can see, the Pvalue = .001617 and since its less that .05, we REJECT the Null Hypothesis and conclude that the model is heteroscedastic.
+
+### 5(ii) GoldField -Quandt (GQ)Test
+
+As we have seen, the reggressor causing heteroscedasticity is the Citeprice. To carry out GQ test, we need:
+
+-1. Sort the observations based on asceding value of the regressor causing heteroscedasticity.
+
+-2. Fit to separate reggressor models i.e, one-to-"small" values and one-to-"large" values.
+
+-3. Using F-test, we test the equality of the residual variances of the two models
+
+-4. If the models is heteroscedastic, the theoretical variables in (3) above will be equal.
+
+```{r}
+
+### Goldfeld-Quandt test
+
+gqtest(jlm1, point = .5, fraction = 1/3, order.by = ~log(journals$citeprice))
+```
+fraction = 1/3 means we drop the middles (1/3) of the data, this gives a clear partition of the two groups. We then order the remaining observations with respect to Citeprice. 
+
+## 5) Results
+From the test, we can see that the variances of the two segment increases from first group to second group. Hence, the model is Heteroscedastic.
+
+
+## 6) Handling Heteroscedasticity Through Feasible GLS
+
+Since we have already confirmed that our model is Heteroscedastic, and have also identified the variable causing heteroscedasticity, we now apply FGLS to convert it into homoscedastic one. The procedure is as follows:
+
+-1. Regress the response variable(y) on the regressors (x1, x2, ..., xr) to obtain the OLS residuals.
+
+-2. On the independent variables (citeprice), regress 
+$$log(\hat{\xi^{2}})$$ 
+
+-3. Calculate prediction.
+
+$$\hat{g} = \hat{\delta_o} + \hat{\delta_1} x_1 + \hat{\delta_2} x_2 + \cdots + \hat{\delta_r} x_r$$
+4. Calculate $$\hat{h} = e^{\hat{g}}$$.
+
+5. Finally,We then carry out WLS to estimate the regression parameter (y) on (x1, x2, ..., xr) using the weights $$\frac{1}{\sqrt{\hat{h}}}$$
+
+```{r}
+jlm1fit <- jlm1$fitted.values ### The fitted values from Heteroscedastic model
+jlgs <- lm(log(jres^2) ~ jlm1fit + I(jlm1fit^2)) ## Step 2 of FGLS above
+summary(jlgs)
+
+jlgs_w <- 1/exp(fitted.values(jlgs)) ## The weight 
+
+j_lmw <- lm(log(subs) ~ log(citeprice), weights = jlgs_w,  data = journals) ### regress step 2above
+summary(j_lmw) 
+```
+
+
+## 7) Graphically Checking the Results 
+
+```{r}
+plot(sqrt(jlgs_w)*log(journals$citeprice),sqrt(jlgs_w)*residuals(j_lmw), xlab = "log(CitePrice)", ylab =  "Residuals", main = "1. Almost Homoscedastic Model Under FGLS")
+plot(log(journals$citeprice), jres, main = "2. Original Heteroscedacity Model", xlab = "log(CitePrice)", ylab = "Residuals") 
+
+```
+
+From the two graphs, you can notice that graph1, is less heteroscedastic compared to graph 2
+
+ 
+
+
+
